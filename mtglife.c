@@ -398,6 +398,62 @@ static void roll_dice(void)
     rb->button_clear_queue();
 }
 
+/* Roll a d20 for every player to decide who goes first (MTG roll-off). */
+static void roll_for_start(void)
+{
+    int rolls[MAX_PLAYERS];
+
+    for (;;) {
+        int i, maxv = 0, count = 0, winner = 0, b, tw, th, y;
+        char line[32];
+
+        for (i = 0; i < g.num_players; i++) {
+            rolls[i] = rb->rand() % 20 + 1;             /* d20 */
+            if (rolls[i] > maxv) maxv = rolls[i];
+        }
+        for (i = 0; i < g.num_players; i++)
+            if (rolls[i] == maxv) { count++; winner = i; }
+
+        rb->lcd_set_background(LCD_BLACK);
+        rb->lcd_clear_display();
+        rb->lcd_setfont(font_med);
+        rb->lcd_set_foreground(LCD_WHITE);
+        rb->lcd_putsxy(4, 2, "Roll for first (d20)");
+        rb->lcd_getstringsize("Mg", &tw, &th);
+        y = 2 + th + 4;
+        for (i = 0; i < g.num_players; i++) {
+            struct rgb c = PLAYER_RGB[i];
+            rb->lcd_set_foreground(LCD_RGBPACK(c.r, c.g, c.b));
+            rb->snprintf(line, sizeof line, "P%d: %2d%s", i + 1, rolls[i],
+                         (count == 1 && i == winner) ? "  <- first" : "");
+            rb->lcd_putsxy(8, y, line);
+            y += th + 2;
+        }
+        y += 6;
+        rb->lcd_set_foreground(LCD_WHITE);
+        if (count > 1) {
+            rb->lcd_putsxy(4, y, "Tie at the top - reroll");
+        } else {
+            rb->snprintf(line, sizeof line, "P%d goes first!", winner + 1);
+            rb->lcd_putsxy(4, y, line);
+        }
+        rb->lcd_setfont(FONT_UI);
+        rb->lcd_getstringsize("Mg", &tw, &th);
+        rb->lcd_set_foreground(COL_DIM);
+        rb->lcd_putsxy(4, LCD_HEIGHT - th - 2, "SELECT/scroll:reroll  MENU:back");
+        rb->lcd_update();
+
+        b = rb->button_get(true);
+        if (b == BUTTON_SELECT || b == BUTTON_SCROLL_FWD || b == BUTTON_SCROLL_BACK)
+            continue;
+        if (b == BUTTON_MENU || b == (BUTTON_MENU | BUTTON_REL))
+            break;
+        if (rb->default_event_handler(b) == SYS_USB_CONNECTED)
+            break;
+    }
+    rb->button_clear_queue();
+}
+
 /* returns true if the user chose Quit */
 static bool main_menu(void)
 {
@@ -406,7 +462,7 @@ static bool main_menu(void)
 
     MENUITEM_STRINGLIST(menu, "MTG Life", NULL,
                         "Resume", "Number of players", "Starting life",
-                        "Roll dice", "Reset life", "Quit");
+                        "Roll dice", "Roll for first", "Reset life", "Quit");
 
     rb->button_clear_queue();
     while (!done) {
@@ -431,9 +487,12 @@ static bool main_menu(void)
                 roll_dice();
                 break;
             case 4:
-                reset_life();
+                roll_for_start();
                 break;
             case 5:
+                reset_life();
+                break;
+            case 6:
                 done = true;
                 quit = true;
                 break;

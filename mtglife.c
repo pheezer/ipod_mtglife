@@ -38,6 +38,7 @@
 #define COL_UP       LCD_RGBPACK(40, 220, 60)    /* green: life increase */
 #define COL_DOWN     LCD_RGBPACK(255, 70, 70)    /* red: life decrease */
 #define COL_RING     LCD_RGBPACK(255, 255, 255)  /* white: selection ring */
+#define COL_DEAD     LCD_RGBPACK(100, 0, 0)      /* very dark red: life below 0 */
 
 #define ANIM_PULSE   (HZ / 3)      /* flash duration after a change */
 #define ANIM_HOLD    (5 * HZ)      /* life tally shown fully this long */
@@ -199,7 +200,7 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now)
     rb->snprintf(buf, sizeof buf, "%d", pl->life);
     rb->lcd_setfont(font_big);
     rb->lcd_getstringsize(buf, &fw, &fh);
-    rb->lcd_set_foreground(ink);
+    rb->lcd_set_foreground(pl->life < 0 ? COL_DEAD : ink);
     rb->lcd_putsxy(x + (w - fw) / 2, y + (h - fh) / 2, buf);
 
     /* running life-change tally, top-right, with a black outline so the

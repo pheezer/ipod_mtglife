@@ -1,0 +1,5 @@
+# build artifacts
+*.rock
+*.o
+build-*/
+.DS_Store

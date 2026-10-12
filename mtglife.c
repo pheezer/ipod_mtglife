@@ -285,12 +285,24 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now, bool flip)
         draw_number(x + (w - ow) / 2, num_y, buf, font_num, col, flip, NUM_SCALE);
     }
 
-    /* player label: centered, facing the player (flipped for the top row) */
+    /* player label: pulled toward the screen centre (where the cells
+     * converge), facing the player (flipped for the top row) */
     {
-        int lh = rb->font_get(font_med)->height;
+        int lh = rb->font_get(font_med)->height, lw, lsh, lx, ly, cx = x + w / 2;
         char lbl[8];
         rb->snprintf(lbl, sizeof lbl, "P%d", idx + 1);
-        draw_centered(x, w, flip ? (y + h - lh - 2) : (y + 2), lbl, font_med, ink, flip);
+        rb->font_getstringsize((const unsigned char *)lbl, &lw, &lsh, font_med);
+        if (cx < LCD_WIDTH / 2 - 4)      lx = x + w - lw - 4;   /* cell left of centre: hug right */
+        else if (cx > LCD_WIDTH / 2 + 4) lx = x + 4;            /* cell right of centre: hug left */
+        else                             lx = x + (w - lw) / 2; /* straddles centre */
+        ly = flip ? (y + h - lh - 2) : (y + 2);                /* inner (centre) edge */
+        if (flip)
+            draw_number(lx, ly, lbl, font_med, ink, true, 1);
+        else {
+            rb->lcd_setfont(font_med);
+            rb->lcd_set_foreground(ink);
+            rb->lcd_putsxy(lx, ly, lbl);
+        }
     }
 
     /* running life-change tally: centered just "above" the number (above for
@@ -334,11 +346,10 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now, bool flip)
     if (pl->experience)    bp += rb->snprintf(bd+bp, sizeof bd-bp, "Ex%d ", pl->experience);
     if (pl->commander_tax) bp += rb->snprintf(bd+bp, sizeof bd-bp, "Tx%d ", pl->commander_tax);
     if (bd[0]) {
-        int bw, bh;
-        rb->lcd_setfont(FONT_UI);
-        rb->lcd_getstringsize(bd, &bw, &bh);
-        rb->lcd_set_foreground(ink);
-        rb->lcd_putsxy(x + 5, y + h - bh - 3, bd);
+        /* counters sit at the player's near edge -- top of screen (flipped) for
+         * a top-row player, bottom (upright) otherwise -- centered, facing them */
+        int bh = rb->font_get(FONT_UI)->height;
+        draw_centered(x, w, flip ? (y + 3) : (y + h - bh - 3), bd, FONT_UI, ink, flip);
     }
 
     /* selection ring on top: double black+white so it shows on any color */

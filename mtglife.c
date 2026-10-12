@@ -608,10 +608,21 @@ static bool main_menu(void)
                 if (g.sel >= g.num_players)
                     g.sel = g.num_players - 1;
                 break;
-            case 2:
-                rb->set_int("Starting life", "", UNIT_INT, &g.start_life,
-                            NULL, 5, 1, 99, NULL);
+            case 2: {
+                static const struct opt_items life_opts[4] = {
+                    {"40", TALK_ID(40, UNIT_INT)}, {"30", TALK_ID(30, UNIT_INT)},
+                    {"25", TALK_ID(25, UNIT_INT)}, {"20", TALK_ID(20, UNIT_INT)},
+                };
+                static const int life_vals[4] = {40, 30, 25, 20};
+                int li = 0, i;
+                for (i = 0; i < 4; i++)
+                    if (life_vals[i] == g.start_life) li = i;
+                rb->set_option("Starting life", &li, RB_INT, life_opts, 4, NULL);
+                g.start_life = life_vals[li];
+                for (i = 0; i < g.num_players; i++)   /* apply to every player */
+                    g.p[i].life = g.start_life;
                 break;
+            }
             case 3:
                 roll_dice();
                 break;

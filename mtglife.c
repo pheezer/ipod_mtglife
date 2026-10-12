@@ -46,6 +46,10 @@
 #define ANIM_FRAME   (HZ / 25)     /* frame tick while something animates */
 #define NUM_SCALE    2             /* life number drawn at this integer scale */
 
+#define RFF_ROLL     (3 * HZ / 2)  /* "rolling for first" blink phase */
+#define RFF_WIN      (2 * HZ)      /* winner blinks fast */
+#define RFF_FADE     (3 * HZ / 2)  /* winner holds "1st" then fades out */
+
 /* per-player signature colors (whole-cell background = identity).
  * Kept as RGB triples so we can lighten/darken for the flash. */
 struct rgb { short r, g, b; };
@@ -86,6 +90,9 @@ static struct game {
     int active_counter;
     long cnt_pulse_tick;        /* flash on the active counter row */
     int  cnt_pulse_dir;
+    bool rff_active;            /* "roll for first" animation playing */
+    long rff_start;             /* tick it began */
+    int  rff_winner;            /* chosen first player */
 } g;
 
 static int die_idx = 6;         /* index into die_sides -> d20 */
@@ -384,6 +391,85 @@ static void draw_grid(long now)
     }
 }
 
+/* Rectangle + facing of a single player cell (same layout as draw_grid). */
+static void cell_rect(int idx, int *ox, int *oy, int *ow, int *oh, bool *oflip)
+{
+    int rowcols[2], rows = grid_layout(g.num_players, rowcols);
+    int rowh = LCD_HEIGHT / rows, r, c, i = 0;
+    for (r = 0; r < rows; r++) {
+        int cols = rowcols[r], cw = LCD_WIDTH / cols;
+        int yy = r * rowh, hh = (r == rows - 1) ? (LCD_HEIGHT - yy) : rowh;
+        for (c = 0; c < cols; c++, i++)
+            if (i == idx) {
+                int xx = c * cw;
+                *ox = xx; *oy = yy;
+                *ow = (c == cols - 1) ? (LCD_WIDTH - xx) : cw;
+                *oh = hh;
+                *oflip = (rows > 1 && r == 0);
+                return;
+            }
+    }
+}
+
+/* "Roll for first" animation over the normal grid: a blinking banner, then the
+ * winner's square blinks fast showing "1st", then it fades back to play mode. */
+static void draw_rff_overlay(long now)
+{
+    long el = now - g.rff_start;
+
+    if (el >= RFF_ROLL + RFF_WIN + RFF_FADE) {
+        g.rff_active = false;                          /* finished */
+        return;
+    }
+
+    if (el < RFF_ROLL) {                               /* blinking banner */
+        int tw, th, by;
+        rb->lcd_setfont(font_med);
+        rb->lcd_getstringsize("Rolling for first", &tw, &th);
+        by = LCD_HEIGHT / 2 - th / 2 - 3;
+        rb->lcd_set_foreground(LCD_BLACK);
+        rb->lcd_fillrect(0, by, LCD_WIDTH, th + 6);
+        if (((el / (HZ / 3)) % 2) == 0) {
+            rb->lcd_set_background(LCD_BLACK);
+            rb->lcd_set_foreground(LCD_WHITE);
+            rb->lcd_putsxy((LCD_WIDTH - tw) / 2, by + 3, "Rolling for first");
+        }
+        return;
+    }
+
+    {                                                  /* winner reveal */
+        long wel = el - RFF_ROLL;
+        bool blinking = (wel < RFF_WIN);
+        bool show = blinking ? (((wel / (HZ / 6)) % 2) == 0) : true;
+        if (show) {
+            int wx = 0, wy = 0, ww = 0, wh = 0, sw, sh, ow, oh, f = 100;
+            int gr = 255, gg = 210, gb = 0;            /* gold */
+            bool wflip = false;
+            struct rgb pc = PLAYER_RGB[g.rff_winner];
+            unsigned fill, ink1;
+            cell_rect(g.rff_winner, &wx, &wy, &ww, &wh, &wflip);
+            if (!blinking) {                           /* fade gold -> player colour */
+                long fel = wel - RFF_WIN;
+                f = 100 * (RFF_FADE - fel) / RFF_FADE;
+                gr = pc.r + (gr - pc.r) * f / 100;
+                gg = pc.g + (gg - pc.g) * f / 100;
+                gb = pc.b + (gb - pc.b) * f / 100;
+            }
+            fill = LCD_RGBPACK(clampi(gr), clampi(gg), clampi(gb));
+            rb->lcd_set_foreground(fill);
+            rb->lcd_fillrect(wx, wy, ww, wh);
+            rb->lcd_set_background(fill);
+            ink1 = blinking ? LCD_BLACK
+                 : LCD_RGBPACK(clampi(gr*(100-f)/100), clampi(gg*(100-f)/100),
+                               clampi(gb*(100-f)/100));
+            rb->font_getstringsize((const unsigned char *)"1st", &sw, &sh, font_num);
+            ow = sw * NUM_SCALE;  oh = sh * NUM_SCALE;
+            draw_number(wx + (ww - ow) / 2, wy + (wh - oh) / 2, "1st", font_num,
+                        ink1, wflip, NUM_SCALE);
+        }
+    }
+}
+
 static void draw_counter_screen(long now)
 {
     int i, y, lh, tw, th;
@@ -440,8 +526,11 @@ static void draw_game(long now)
     rb->lcd_clear_display();
     if (g.mode == MODE_PICKER || g.mode == MODE_COUNTER)
         draw_counter_screen(now);
-    else
+    else {
         draw_grid(now);
+        if (g.rff_active)
+            draw_rff_overlay(now);
+    }
     rb->lcd_update();
 }
 
@@ -494,62 +583,6 @@ static void roll_dice(void)
     rb->button_clear_queue();
 }
 
-/* Roll a d20 for every player to decide who goes first (MTG roll-off). */
-static void roll_for_start(void)
-{
-    int rolls[MAX_PLAYERS];
-
-    for (;;) {
-        int i, maxv = 0, count = 0, winner = 0, b, tw, th, y;
-        char line[32];
-
-        for (i = 0; i < g.num_players; i++) {
-            rolls[i] = rb->rand() % 20 + 1;             /* d20 */
-            if (rolls[i] > maxv) maxv = rolls[i];
-        }
-        for (i = 0; i < g.num_players; i++)
-            if (rolls[i] == maxv) { count++; winner = i; }
-
-        rb->lcd_set_background(LCD_BLACK);
-        rb->lcd_clear_display();
-        rb->lcd_setfont(font_med);
-        rb->lcd_set_foreground(LCD_WHITE);
-        rb->lcd_putsxy(4, 2, "Roll for first (d20)");
-        rb->lcd_getstringsize("Mg", &tw, &th);
-        y = 2 + th + 4;
-        for (i = 0; i < g.num_players; i++) {
-            struct rgb c = PLAYER_RGB[i];
-            rb->lcd_set_foreground(LCD_RGBPACK(c.r, c.g, c.b));
-            rb->snprintf(line, sizeof line, "P%d: %2d%s", i + 1, rolls[i],
-                         (count == 1 && i == winner) ? "  <- first" : "");
-            rb->lcd_putsxy(8, y, line);
-            y += th + 2;
-        }
-        y += 6;
-        rb->lcd_set_foreground(LCD_WHITE);
-        if (count > 1) {
-            rb->lcd_putsxy(4, y, "Tie at the top - reroll");
-        } else {
-            rb->snprintf(line, sizeof line, "P%d goes first!", winner + 1);
-            rb->lcd_putsxy(4, y, line);
-        }
-        rb->lcd_setfont(FONT_UI);
-        rb->lcd_getstringsize("Mg", &tw, &th);
-        rb->lcd_set_foreground(COL_DIM);
-        rb->lcd_putsxy(4, LCD_HEIGHT - th - 2, "SELECT/scroll:reroll  MENU:back");
-        rb->lcd_update();
-
-        b = rb->button_get(true);
-        if (b == BUTTON_SELECT || b == BUTTON_SCROLL_FWD || b == BUTTON_SCROLL_BACK)
-            continue;
-        if (b == BUTTON_MENU || b == (BUTTON_MENU | BUTTON_REL))
-            break;
-        if (rb->default_event_handler(b) == SYS_USB_CONNECTED)
-            break;
-    }
-    rb->button_clear_queue();
-}
-
 /* returns true if the user chose Quit */
 static bool main_menu(void)
 {
@@ -558,7 +591,7 @@ static bool main_menu(void)
 
     MENUITEM_STRINGLIST(menu, "MTG Life", NULL,
                         "Resume", "Number of players", "Starting life",
-                        "Roll dice", "Roll for first", "Reset life", "Quit");
+                        "Roll dice", "Reset life", "Quit");
 
     rb->button_clear_queue();
     while (!done) {
@@ -583,12 +616,9 @@ static bool main_menu(void)
                 roll_dice();
                 break;
             case 4:
-                roll_for_start();
-                break;
-            case 5:
                 reset_life();
                 break;
-            case 6:
+            case 5:
                 done = true;
                 quit = true;
                 break;
@@ -678,6 +708,8 @@ static void handle_back(void)
 static bool animating(long now)
 {
     int i;
+    if (g.rff_active)
+        return true;                                        /* roll-for-first running */
     if (g.mode == MODE_LIFE)
         return true;                                        /* pulsing edit ring */
     if (g.mode == MODE_COUNTER && now - g.cnt_pulse_tick < ANIM_PULSE)
@@ -747,6 +779,11 @@ enum plugin_status plugin_start(const void *parameter)
             handle_scroll(+1);
         } else if (btn == BUTTON_SCROLL_BACK || btn == (BUTTON_SCROLL_BACK | BUTTON_REPEAT)) {
             handle_scroll(-1);
+        } else if (btn == BUTTON_PLAY) {
+            g.rff_winner = rb->rand() % g.num_players;   /* PLAY = roll for first */
+            g.rff_start  = now;
+            g.rff_active = true;
+            g.mode = MODE_GRID;
         } else if (btn == BUTTON_MENU ||
                    btn == (BUTTON_SELECT | BUTTON_REL) ||
                    btn == (BUTTON_SELECT | BUTTON_REPEAT)) {

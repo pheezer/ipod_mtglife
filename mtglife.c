@@ -208,6 +208,39 @@ static void draw_number(int ox, int oy, const char *s, int fontid,
     }
 }
 
+/* Draw s horizontally centered within [x, x+w) at top y, flipped if asked. */
+static void draw_centered(int x, int w, int y, const char *s, int fontid,
+                          unsigned color, bool flip)
+{
+    int sw, sh;
+    rb->font_getstringsize((const unsigned char *)s, &sw, &sh, fontid);
+    if (flip)
+        draw_number(x + (w - sw) / 2, y, s, fontid, color, true, 1);
+    else {
+        rb->lcd_setfont(fontid);
+        rb->lcd_set_foreground(color);
+        rb->lcd_putsxy(x + (w - sw) / 2, y, s);
+    }
+}
+
+/* Like draw_centered, but with a 1px outline so it reads on any background. */
+static void draw_centered_outlined(int x, int w, int y, const char *s, int fontid,
+                                   unsigned fg, unsigned outline, bool flip)
+{
+    int sw, sh, dx, dy, nx;
+    rb->font_getstringsize((const unsigned char *)s, &sw, &sh, fontid);
+    nx = x + (w - sw) / 2;
+    rb->lcd_setfont(fontid);
+    for (dy = -1; dy <= 1; dy++)
+        for (dx = -1; dx <= 1; dx++)
+            if (dx || dy) {
+                if (flip) draw_number(nx + dx, y + dy, s, fontid, outline, true, 1);
+                else { rb->lcd_set_foreground(outline); rb->lcd_putsxy(nx + dx, y + dy, s); }
+            }
+    if (flip) draw_number(nx, y, s, fontid, fg, true, 1);
+    else { rb->lcd_set_foreground(fg); rb->lcd_putsxy(nx, y, s); }
+}
+
 static void draw_cell(int idx, int x, int y, int w, int h, long now, bool flip)
 {
     struct player *pl = &g.p[idx];
@@ -215,7 +248,7 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now, bool flip)
     long page = now - pl->pulse_tick;
     int br = c.r, bg = c.g, bb = c.b;
     unsigned ink;
-    int fw, fh, k, maxcmd = 0, bp = 0;
+    int fw, fh, k, maxcmd = 0, bp = 0, num_y = 0, num_h = 0;
     char buf[8], bd[40];
     long age;
 
@@ -240,39 +273,39 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now, bool flip)
 
     ink = (lum(c) < 140) ? LCD_WHITE : LCD_BLACK;          /* readable on this color */
 
-    /* player label */
-    rb->lcd_setfont(font_med);
-    rb->lcd_set_foreground(ink);
-    rb->lcd_putsxyf(x + 5, y + 3, "P%d", idx + 1);
-
-    /* life number: large, centered, and facing the player (top row flipped). */
+    /* life number: large, centered, facing the player (top row flipped) */
     {
         unsigned col = (pl->life < 0) ? COL_DEAD : ink;
-        int ow, oh;
+        int ow;
         rb->snprintf(buf, sizeof buf, "%d", pl->life);
         rb->font_getstringsize((const unsigned char *)buf, &fw, &fh, font_num);
-        ow = fw * NUM_SCALE;
-        oh = fh * NUM_SCALE;
-        draw_number(x + (w - ow) / 2, y + (h - oh) / 2, buf, font_num, col,
-                    flip, NUM_SCALE);
+        ow    = fw * NUM_SCALE;
+        num_h = fh * NUM_SCALE;
+        num_y = y + (h - num_h) / 2;
+        draw_number(x + (w - ow) / 2, num_y, buf, font_num, col, flip, NUM_SCALE);
     }
 
-    /* running life-change tally, top-right, with a black outline so the
-     * green/red reads on any background color; holds then fades out. */
+    /* player label: centered, facing the player (flipped for the top row) */
+    {
+        int lh = rb->font_get(font_med)->height;
+        char lbl[8];
+        rb->snprintf(lbl, sizeof lbl, "P%d", idx + 1);
+        draw_centered(x, w, flip ? (y + h - lh - 2) : (y + 2), lbl, font_med, ink, flip);
+    }
+
+    /* running life-change tally: centered just "above" the number (above for
+     * upright players, below on-screen for a flipped top-row one); fades out. */
     age = now - pl->delta_tick;
     if (pl->delta != 0 && age < ANIM_HOLD + ANIM_FADE) {
         char ts[8];
-        int tw, tht, pop, tx, ty, dx, dy, f = 100;
+        int lh = rb->font_get(font_med)->height, pop, ty, f = 100;
         int tcr, tcg, tcb, ocr, ocg, ocb;
         rb->snprintf(ts, sizeof ts, "%+d", pl->delta);
-        rb->lcd_setfont(font_med);
-        rb->lcd_getstringsize(ts, &tw, &tht);
         if (age >= ANIM_HOLD) {                            /* fading phase */
             long rem = ANIM_HOLD + ANIM_FADE - age;
             f = 100 * rem / ANIM_FADE;                     /* 100 -> 0 */
         }
-        /* green (up) / red (down), blended toward the cell color as it fades,
-         * so it dissolves into the background instead of turning black. */
+        /* green (up) / red (down), blended toward the cell color as it fades */
         if (pl->delta > 0) { tcr = 60;  tcg = 230; tcb = 90; }
         else               { tcr = 255; tcg = 80;  tcb = 80; }
         tcr = c.r + (tcr - c.r) * f / 100;
@@ -281,15 +314,11 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now, bool flip)
         ocr = c.r * (100 - f) / 100;                       /* outline: black -> bg */
         ocg = c.g * (100 - f) / 100;
         ocb = c.b * (100 - f) / 100;
-        pop = (age < HZ / 8) ? 2 : 0;                      /* brief upward pop */
-        tx = x + w - tw - 5;  ty = y + 3 - pop;
-        rb->lcd_set_foreground(LCD_RGBPACK(clampi(ocr), clampi(ocg), clampi(ocb)));
-        for (dy = -1; dy <= 1; dy++)
-            for (dx = -1; dx <= 1; dx++)
-                if (dx || dy)
-                    rb->lcd_putsxy(tx + dx, ty + dy, ts);
-        rb->lcd_set_foreground(LCD_RGBPACK(clampi(tcr), clampi(tcg), clampi(tcb)));
-        rb->lcd_putsxy(tx, ty, ts);
+        pop = (age < HZ / 8) ? 2 : 0;                      /* brief pop on change */
+        ty  = flip ? (num_y + num_h + 2 + pop) : (num_y - lh - 2 - pop);
+        draw_centered_outlined(x, w, ty, ts, font_med,
+                               LCD_RGBPACK(clampi(tcr), clampi(tcg), clampi(tcb)),
+                               LCD_RGBPACK(clampi(ocr), clampi(ocg), clampi(ocb)), flip);
     } else if (pl->delta != 0) {
         pl->delta = 0;                                     /* window elapsed */
     }

@@ -748,6 +748,10 @@ enum plugin_status plugin_start(const void *parameter)
     configfile_load(CFG_FILE, config, CFG_COUNT, 0);
     if (g.num_players < MIN_PLAYERS) g.num_players = MIN_PLAYERS;
     if (g.num_players > MAX_PLAYERS) g.num_players = MAX_PLAYERS;
+    /* starting life must be one of the offered values (fixes stale configs) */
+    if (g.start_life != 20 && g.start_life != 25 &&
+        g.start_life != 30 && g.start_life != 40)
+        g.start_life = DEFAULT_LIFE;
 
     /* large bold fonts for readability; fall back to the UI font if absent */
     font_big = rb->font_load("/.rockbox/fonts/35-Adobe-Helvetica-Bold.fnt");

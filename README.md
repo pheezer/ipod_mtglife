@@ -3,7 +3,9 @@
 A **Magic: The Gathering** life & counter tracker as a [Rockbox](https://www.rockbox.org/)
 plugin for the **iPod 5th generation (iPod Video)**, driven entirely by the click wheel.
 
-![iPod MTG Life running on a 5th-generation iPod](docs/example.jpg)
+<p align="center">
+  <img src="docs/example.jpg" alt="iPod MTG Life running on a 5th-generation iPod" width="300">
+</p>
 
 ## Features
 

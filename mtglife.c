@@ -44,6 +44,7 @@
 #define ANIM_HOLD    (5 * HZ)      /* life tally shown fully this long */
 #define ANIM_FADE    (HZ)          /* then fades to nothing over this long */
 #define ANIM_FRAME   (HZ / 25)     /* frame tick while something animates */
+#define NUM_SCALE    2             /* life number drawn at this integer scale */
 
 /* per-player signature colors (whole-cell background = identity).
  * Kept as RGB triples so we can lighten/darken for the flash. */
@@ -177,42 +178,37 @@ static void build_ring(int ring[])
     }
 }
 
-/* Draw a string in the given colour. Rockbox can't rotate text, so when
- * flip is set we plot each glyph pixel rotated 180 degrees about the text
- * box -- used so players across the table read their total right-way-up. */
+/* Draw a string enlarged by `scale`, optionally flipped 180 degrees (so a
+ * player across the table reads their total right-way-up). Rockbox has no
+ * scaled or rotated text, so we read each glyph's bitmap and plot every set
+ * pixel as a scale x scale block. (ox,oy) is the top-left of the output box;
+ * the output is (strwidth*scale) x (fontheight*scale). */
 static void draw_number(int ox, int oy, const char *s, int fontid,
-                        unsigned color, bool flip)
+                        unsigned color, bool flip, int scale)
 {
-    struct font *pf;
-    int fh, tw, th, penx, gx, gy;
+    struct font *pf = rb->font_get(fontid);
+    int fh = pf->height, tw, th, penx, gx, gy;
     const char *p;
 
-    if (!flip) {
-        rb->lcd_setfont(fontid);
-        rb->lcd_set_foreground(color);
-        rb->lcd_putsxy(ox, oy, s);
-        return;
-    }
-
-    pf = rb->font_get(fontid);
-    fh = pf->height;
     rb->font_getstringsize((const unsigned char *)s, &tw, &th, fontid);
     rb->lcd_set_foreground(color);
-    for (p = s, penx = ox; *p; p++) {
+    for (p = s, penx = 0; *p; p++) {
         unsigned short ch = (unsigned char)*p;
         int gw = rb->font_get_width(pf, ch);
         const unsigned char *bits = rb->font_get_bits(pf, ch);
         for (gy = 0; gy < fh; gy++)
             for (gx = 0; gx < gw; gx++)
-                if ((bits[(gy >> 3) * gw + gx] >> (gy & 7)) & 1)
-                    rb->lcd_drawpixel(ox + (tw - 1) - (penx + gx - ox),
-                                      oy + (fh - 1) - gy);
+                if ((bits[(gy >> 3) * gw + gx] >> (gy & 7)) & 1) {
+                    int sx = penx + gx;                 /* pixel in the text box */
+                    int px = flip ? (tw - 1 - sx) : sx;
+                    int py = flip ? (fh - 1 - gy) : gy;
+                    rb->lcd_fillrect(ox + px * scale, oy + py * scale, scale, scale);
+                }
         penx += gw;
     }
 }
 
-static void draw_cell(int idx, int x, int y, int w, int h, long now,
-                      bool flip, int halign)
+static void draw_cell(int idx, int x, int y, int w, int h, long now, bool flip)
 {
     struct player *pl = &g.p[idx];
     struct rgb c = PLAYER_RGB[idx];
@@ -249,19 +245,16 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now,
     rb->lcd_set_foreground(ink);
     rb->lcd_putsxyf(x + 5, y + 3, "P%d", idx + 1);
 
-    /* life number: bigger while actively changing; faces the player -- flipped
-     * 180 for the top row, pushed to their edge (left/right) otherwise. */
+    /* life number: large, centered, and facing the player (top row flipped). */
     {
-        int nf  = (page < ANIM_PULSE) ? font_big : font_num;   /* grow on change */
         unsigned col = (pl->life < 0) ? COL_DEAD : ink;
-        int nx;
+        int ow, oh;
         rb->snprintf(buf, sizeof buf, "%d", pl->life);
-        rb->lcd_setfont(nf);
-        rb->lcd_getstringsize(buf, &fw, &fh);
-        if (halign < 0)      nx = x + 6;
-        else if (halign > 0) nx = x + w - fw - 6;
-        else                 nx = x + (w - fw) / 2;
-        draw_number(nx, y + (h - fh) / 2, buf, nf, col, flip);
+        rb->font_getstringsize((const unsigned char *)buf, &fw, &fh, font_num);
+        ow = fw * NUM_SCALE;
+        oh = fh * NUM_SCALE;
+        draw_number(x + (w - ow) / 2, y + (h - oh) / 2, buf, font_num, col,
+                    flip, NUM_SCALE);
     }
 
     /* running life-change tally, top-right, with a black outline so the
@@ -346,8 +339,7 @@ static void draw_grid(long now)
             int x = c * cw;
             int w = (c == cols - 1) ? (LCD_WIDTH - x) : cw;
             bool flip = (rows > 1 && r == 0);          /* top row faces across */
-            int halign = (cols == 1) ? 0 : (c == 0 ? -1 : (c == cols - 1 ? 1 : 0));
-            draw_cell(idx, x, y, w, h, now, flip, halign);
+            draw_cell(idx, x, y, w, h, now, flip);
         }
     }
 }

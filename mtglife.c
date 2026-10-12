@@ -55,7 +55,8 @@ static const struct rgb PLAYER_RGB[MAX_PLAYERS] = {
 
 /* Loaded from the bundled Adobe-Helvetica-Bold set at startup; fall back to
  * FONT_UI if the .fnt isn't installed on the device. */
-static int font_big = FONT_UI;   /* large life numbers / dice result */
+static int font_big = FONT_UI;   /* life number while actively changing / dice */
+static int font_num = FONT_UI;   /* life number at rest (a bit smaller) */
 static int font_med = FONT_UI;   /* labels, tally, counter screen */
 
 enum mode { MODE_GRID, MODE_LIFE, MODE_PICKER, MODE_COUNTER };
@@ -159,7 +160,59 @@ static int grid_layout(int n, int rowcols[2])
     }
 }
 
-static void draw_cell(int idx, int x, int y, int w, int h, long now)
+/* Clockwise order of the player cells: top row left->right, then the
+ * bottom row right->left, which traces the perimeter like going around a
+ * table. Fills ring[] (ring[position] = player index). */
+static void build_ring(int ring[])
+{
+    int rowcols[2], rows = grid_layout(g.num_players, rowcols);
+    int r, c, base = 0, pos = 0;
+    for (r = 0; r < rows; r++) {
+        int cols = rowcols[r];
+        if ((r & 1) == 0)
+            for (c = 0; c < cols; c++)       ring[pos++] = base + c;
+        else
+            for (c = cols - 1; c >= 0; c--)  ring[pos++] = base + c;
+        base += cols;
+    }
+}
+
+/* Draw a string in the given colour. Rockbox can't rotate text, so when
+ * flip is set we plot each glyph pixel rotated 180 degrees about the text
+ * box -- used so players across the table read their total right-way-up. */
+static void draw_number(int ox, int oy, const char *s, int fontid,
+                        unsigned color, bool flip)
+{
+    struct font *pf;
+    int fh, tw, th, penx, gx, gy;
+    const char *p;
+
+    if (!flip) {
+        rb->lcd_setfont(fontid);
+        rb->lcd_set_foreground(color);
+        rb->lcd_putsxy(ox, oy, s);
+        return;
+    }
+
+    pf = rb->font_get(fontid);
+    fh = pf->height;
+    rb->font_getstringsize((const unsigned char *)s, &tw, &th, fontid);
+    rb->lcd_set_foreground(color);
+    for (p = s, penx = ox; *p; p++) {
+        unsigned short ch = (unsigned char)*p;
+        int gw = rb->font_get_width(pf, ch);
+        const unsigned char *bits = rb->font_get_bits(pf, ch);
+        for (gy = 0; gy < fh; gy++)
+            for (gx = 0; gx < gw; gx++)
+                if ((bits[(gy >> 3) * gw + gx] >> (gy & 7)) & 1)
+                    rb->lcd_drawpixel(ox + (tw - 1) - (penx + gx - ox),
+                                      oy + (fh - 1) - gy);
+        penx += gw;
+    }
+}
+
+static void draw_cell(int idx, int x, int y, int w, int h, long now,
+                      bool flip, int halign)
 {
     struct player *pl = &g.p[idx];
     struct rgb c = PLAYER_RGB[idx];
@@ -196,12 +249,20 @@ static void draw_cell(int idx, int x, int y, int w, int h, long now)
     rb->lcd_set_foreground(ink);
     rb->lcd_putsxyf(x + 5, y + 3, "P%d", idx + 1);
 
-    /* big life number, centered */
-    rb->snprintf(buf, sizeof buf, "%d", pl->life);
-    rb->lcd_setfont(font_big);
-    rb->lcd_getstringsize(buf, &fw, &fh);
-    rb->lcd_set_foreground(pl->life < 0 ? COL_DEAD : ink);
-    rb->lcd_putsxy(x + (w - fw) / 2, y + (h - fh) / 2, buf);
+    /* life number: bigger while actively changing; faces the player -- flipped
+     * 180 for the top row, pushed to their edge (left/right) otherwise. */
+    {
+        int nf  = (page < ANIM_PULSE) ? font_big : font_num;   /* grow on change */
+        unsigned col = (pl->life < 0) ? COL_DEAD : ink;
+        int nx;
+        rb->snprintf(buf, sizeof buf, "%d", pl->life);
+        rb->lcd_setfont(nf);
+        rb->lcd_getstringsize(buf, &fw, &fh);
+        if (halign < 0)      nx = x + 6;
+        else if (halign > 0) nx = x + w - fw - 6;
+        else                 nx = x + (w - fw) / 2;
+        draw_number(nx, y + (h - fh) / 2, buf, nf, col, flip);
+    }
 
     /* running life-change tally, top-right, with a black outline so the
      * green/red reads on any background color; holds then fades out. */
@@ -284,7 +345,9 @@ static void draw_grid(long now)
         for (c = 0; c < cols && idx < g.num_players; c++, idx++) {
             int x = c * cw;
             int w = (c == cols - 1) ? (LCD_WIDTH - x) : cw;
-            draw_cell(idx, x, y, w, h, now);
+            bool flip = (rows > 1 && r == 0);          /* top row faces across */
+            int halign = (cols == 1) ? 0 : (c == 0 ? -1 : (c == cols - 1 ? 1 : 0));
+            draw_cell(idx, x, y, w, h, now, flip, halign);
         }
     }
 }
@@ -508,9 +571,14 @@ static bool main_menu(void)
 static void handle_scroll(int dir)
 {
     switch (g.mode) {
-        case MODE_GRID:
-            g.sel = (g.sel + dir + g.num_players) % g.num_players;
+        case MODE_GRID: {
+            int ring[MAX_PLAYERS], n = g.num_players, i, pos = 0;
+            build_ring(ring);                      /* clockwise around the screen */
+            for (i = 0; i < n; i++)
+                if (ring[i] == g.sel) { pos = i; break; }
+            g.sel = ring[(pos + dir + n) % n];
             break;
+        }
         case MODE_LIFE: {
             long now = *rb->current_tick;
             struct player *pl = &g.p[g.sel];
@@ -608,8 +676,10 @@ enum plugin_status plugin_start(const void *parameter)
 
     /* large bold fonts for readability; fall back to the UI font if absent */
     font_big = rb->font_load("/.rockbox/fonts/35-Adobe-Helvetica-Bold.fnt");
+    font_num = rb->font_load("/.rockbox/fonts/27-Adobe-Helvetica-Bold.fnt");
     font_med = rb->font_load("/.rockbox/fonts/18-Adobe-Helvetica-Bold.fnt");
     if (font_big < 0) font_big = FONT_UI;
+    if (font_num < 0) font_num = font_big;   /* no size change if 27px missing */
     if (font_med < 0) font_med = FONT_UI;
 
     reset_life();
@@ -620,11 +690,13 @@ enum plugin_status plugin_start(const void *parameter)
 
     while (!quit) {
         long now = *rb->current_tick;
+        rb->reset_poweroff_timer();                 /* don't idle-poweroff while open */
+        rb->backlight_on();                         /* keep the screen lit */
         draw_game(now);
-        btn = animating(now) ? rb->button_get_w_tmo(ANIM_FRAME)
-                             : rb->button_get(true);
+        /* never block forever: wake at least once a second to keep awake */
+        btn = rb->button_get_w_tmo(animating(now) ? ANIM_FRAME : HZ);
         if (btn == BUTTON_NONE)
-            continue;                               /* timeout: advance animation */
+            continue;                               /* timeout: keep-alive + animate */
 
         if (btn == (BUTTON_MENU | BUTTON_REPEAT)) {
             saw_repeat = true;                      /* long press detected */
@@ -654,6 +726,7 @@ enum plugin_status plugin_start(const void *parameter)
 
     configfile_save(CFG_FILE, config, CFG_COUNT, 0);
     if (font_big != FONT_UI) rb->font_unload(font_big);
+    if (font_num != FONT_UI && font_num != font_big) rb->font_unload(font_num);
     if (font_med != FONT_UI) rb->font_unload(font_med);
     return PLUGIN_OK;
 }

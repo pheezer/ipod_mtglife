@@ -738,6 +738,9 @@ enum plugin_status plugin_start(const void *parameter)
 {
     int btn;
     bool quit = false, saw_repeat = false;
+#ifdef HAVE_BACKLIGHT_BRIGHTNESS
+    int old_brightness = DEFAULT_BRIGHTNESS_SETTING, dim_brightness;
+#endif
 
     (void)parameter;
 
@@ -761,6 +764,15 @@ enum plugin_status plugin_start(const void *parameter)
     if (font_num < 0) font_num = font_big;   /* no size change if 27px missing */
     if (font_med < 0) font_med = FONT_UI;
 
+#ifdef HAVE_BACKLIGHT_BRIGHTNESS
+    /* dim the backlight a bit (about halfway toward minimum) to save battery
+     * while the app is open; the screen stays on and we restore it on exit */
+    old_brightness = rb->global_settings->brightness;
+    dim_brightness = (old_brightness + MIN_BRIGHTNESS_SETTING) / 2;
+    if (dim_brightness < MIN_BRIGHTNESS_SETTING)
+        dim_brightness = MIN_BRIGHTNESS_SETTING;
+#endif
+
     reset_life();
     g.sel = 0;
     g.mode = MODE_GRID;
@@ -771,6 +783,9 @@ enum plugin_status plugin_start(const void *parameter)
         long now = *rb->current_tick;
         rb->reset_poweroff_timer();                 /* don't idle-poweroff while open */
         rb->backlight_on();                         /* keep the screen lit */
+#ifdef HAVE_BACKLIGHT_BRIGHTNESS
+        rb->backlight_set_brightness(dim_brightness); /* ...but dimmed, to save battery */
+#endif
         draw_game(now);
         /* never block forever: wake at least once a second to keep awake */
         btn = rb->button_get_w_tmo(animating(now) ? ANIM_FRAME : HZ);
@@ -812,5 +827,8 @@ enum plugin_status plugin_start(const void *parameter)
     if (font_big != FONT_UI) rb->font_unload(font_big);
     if (font_num != FONT_UI && font_num != font_big) rb->font_unload(font_num);
     if (font_med != FONT_UI) rb->font_unload(font_med);
+#ifdef HAVE_BACKLIGHT_BRIGHTNESS
+    rb->backlight_set_brightness(old_brightness);   /* restore the user's brightness */
+#endif
     return PLUGIN_OK;
 }
